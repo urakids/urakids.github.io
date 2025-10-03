@@ -244,7 +244,7 @@
       else throw new Error("ESPLoader: initialize/main/sync のいずれも見つかりません");
 
       // 3) manifest 取得
-      log(`Manifest: ${manifestURL}`);
+      //log(`Manifest: ${manifestURL}`);
       const manifestRes = await fetch(manifestURL, { cache: "no-store" });
       if (!manifestRes.ok) throw new Error("manifest.json の取得に失敗しました");
       const manifest = await manifestRes.json();
@@ -311,7 +311,7 @@
       const manifestURL = `${fwDir}manifest.json${bust}`;
 
       log(`選択: ${version}`);
-      log(`Manifest: ${manifestURL}`);
+      //log(`Manifest: ${manifestURL}`);
 
       flashBtn.disabled = true;
       versionSelect.disabled = true;
