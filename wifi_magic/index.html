@@ -82,7 +82,7 @@
       const txt = (v && typeof v.value === "string" && v.value.trim().length)
         ? v.value
         : "（説明なし）";
-      versionInfoEl.textContent = txt;
+      versionInfoEl.innerText = txt;   // ← textContent から innerText に変更
     }
 
     versionSelect.addEventListener("change", updateVersionInfo);
