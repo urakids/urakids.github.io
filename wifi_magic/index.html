@@ -1,6 +1,334 @@
-<html>
-<title>wifi_magic</title>
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>Wifi Magic Updater</title>
+  <style>
+    body { font-family: monospace; background: #1e1e1e; color: #dcdcdc; padding: 20px; }
+    h1 { font-size: 1.2em; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    #versionInfo {
+      margin-top: 8px; padding: 8px; border: 1px solid #444; background:#111; white-space: pre-wrap;
+    }
+    #log {
+      width: 100%; height: 320px; background: #000;
+      color: #0f0; padding: 10px; overflow-y: auto;
+      white-space: pre-wrap; border: 1px solid #444; margin-top:8px;
+    }
+    button, select, label { margin-top: 10px; }
+    button, select { padding: 8px 16px; }
+    button[disabled] { opacity: 0.6; cursor: not-allowed; }
+    small.hint { color:#aaa }
+  </style>
+</head>
 <body>
-wifi_magic_index
+  <h1>Wifi Magic Updater</h1>
+
+  <div class="row">
+    <label for="version">バージョン選択:</label>
+    <select id="version"></select>
+    <button id="flashBtn">書き込み開始</button>
+    <button id="clearLogBtn" title="シリアルログを消去">ログ消去</button>
+  </div>
+
+  <h2>バージョン情報</h2>
+  <div id="versionInfo">（説明なし）</div>
+ <br>
+  <h2>シリアルログ</h2>
+  <div id="log"></div>
+
+  <script type="module">
+    import * as ESP from "https://unpkg.com/esptool-js@0.5.7/bundle.js";
+
+    const logEl = document.getElementById("log");
+    const versionSelect = document.getElementById("version");
+    const flashBtn = document.getElementById("flashBtn");
+    const clearLogBtn = document.getElementById("clearLogBtn");
+    const versionInfoEl = document.getElementById("versionInfo");
+
+    function log(msg) { logEl.textContent += msg + "\n"; logEl.scrollTop = logEl.scrollHeight; }
+    function clearLog() { logEl.textContent = ""; }
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+    const fwBase = "./firmware/";   // 固定参照（baseUrl不要）
+    let versionsData = [];          // versions.json の配列（id, name, value）
+
+    // ===== versions.json ロード & 表示更新 =====
+    async function loadVersions() {
+      try {
+        const res = await fetch(fwBase + "versions.json", { cache: "no-store" });
+        const json = await res.json();
+        versionsData = json.versions || [];
+
+        versionSelect.innerHTML = "";
+        versionsData.forEach((v) => {
+          const opt = document.createElement("option");
+          opt.value = v.id;
+          opt.textContent = v.name;
+          versionSelect.appendChild(opt);
+        });
+
+        // 先頭の説明を反映
+        updateVersionInfo();
+        log("バージョンリストをロードしました");
+      } catch (err) {
+        log("バージョンリスト取得エラー: " + err.message);
+      }
+    }
+
+    function updateVersionInfo() {
+      const id = versionSelect.value;
+      const v = versionsData.find(x => x.id === id);
+      const txt = (v && typeof v.value === "string" && v.value.trim().length)
+        ? v.value
+        : "（説明なし）";
+      versionInfoEl.textContent = txt;
+    }
+
+    versionSelect.addEventListener("change", updateVersionInfo);
+
+    // ===== リセット関連 =====
+    async function enterBootloader(port) {
+      try {
+        await port.setSignals({ dataTerminalReady: false, requestToSend: true });  // EN=Low, IO0=High
+        await sleep(50);
+        await port.setSignals({ dataTerminalReady: true, requestToSend: false });  // IO0=Low→EN=High（Boot）
+        await sleep(50);
+      } catch {}
+    }
+
+    async function hardResetNormalBoot(port) {
+      try {
+        await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+        await sleep(30);
+        await port.setSignals({ dataTerminalReady: false, requestToSend: true });  // EN=Low
+        await sleep(80);
+        await port.setSignals({ dataTerminalReady: false, requestToSend: false }); // EN=High
+        await sleep(120);
+      } catch {
+        throw new Error("この環境ではハードリセット信号が送れませんでした");
+      }
+    }
+
+    // ===== esptool-js ヘルパ =====
+    function resolveESPExports() {
+      const keys = Object.keys(ESP);
+      const TransportClass =
+        ESP.Transport ||
+        ESP.WebSerialTransport ||
+        (ESP.default && (ESP.default.Transport || ESP.default.WebSerialTransport));
+      const ESPLoaderClass =
+        ESP.ESPLoader ||
+        (ESP.default && ESP.default.ESPLoader);
+      if (!TransportClass || !ESPLoaderClass) {
+        throw new Error("esptool-js のエクスポートが見つかりません: keys=" + JSON.stringify(keys));
+      }
+      return { TransportClass, ESPLoaderClass, keys };
+    }
+
+    function parseOffset(v) {
+      if (typeof v === "number") return v >>> 0;
+      if (typeof v === "string") {
+        return v.trim().toLowerCase().startsWith("0x") ? parseInt(v, 16) >>> 0 : parseInt(v, 10) >>> 0;
+      }
+      throw new Error("manifestのoffsetが不正です: " + String(v));
+    }
+
+    async function fetchBin(url) {
+      log(`${url} を取得中...`);
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`${url} の取得に失敗しました`);
+      return new Uint8Array(await res.arrayBuffer());
+    }
+
+    function normalizeChipKey(nameRaw) {
+      const s = String(nameRaw || "").toLowerCase();
+      if (s.includes("esp32-c3") || s.includes("esp32c3") || s.includes("c3")) return "esp32c3";
+      if (s.includes("esp32-s3") || s.includes("esp32s3") || s.includes("s3")) return "esp32s3";
+      if (s.includes("esp32-s2") || s.includes("esp32s2") || s.includes("s2")) return "esp32s2";
+      if (s.includes("esp32")) return "esp32";
+      return "unknown";
+    }
+    async function detectChipKey(loader) {
+      const candidates = [
+        loader?.chip?.CHIP_NAME,
+        loader?.chipName,
+        loader?.chip?.name,
+        (loader?.getChipName ? await (async ()=>{ try { return await loader.getChipName(); } catch { return undefined; } })() : undefined)
+      ].filter(Boolean);
+      const name = candidates[0] || "unknown";
+      const key = normalizeChipKey(name);
+      log(`検出チップ: ${name} → key=${key}`);
+      return key;
+    }
+
+    function computeFlashSettings(manifest, chipKey) {
+      let mode = "keep", freq = "keep", size = "keep";
+      if (typeof manifest.flashMode === "string" && manifest.flashMode.trim()) mode = manifest.flashMode.trim();
+      if (typeof manifest.flashFreq === "string" && manifest.flashFreq.trim()) freq = manifest.flashFreq.trim();
+      if (typeof manifest.flashSize === "string" && manifest.flashSize.trim()) size = manifest.flashSize.trim();
+
+      if (manifest.flash && typeof manifest.flash === "object") {
+        const f = manifest.flash;
+        if (typeof f.mode === "string" && f.mode.trim()) mode = f.mode.trim();
+        if (typeof f.freq === "string" && f.freq.trim()) freq = f.freq.trim();
+        if (typeof f.size === "string" && f.size.trim()) size = f.size.trim();
+        const pc = f.perChip || {};
+        const o = pc[chipKey];
+        if (o && typeof o === "object") {
+          if (typeof o.mode === "string" && o.mode.trim()) mode = o.mode.trim();
+          if (typeof o.freq === "string" && o.freq.trim()) freq = o.freq.trim();
+          if (typeof o.size === "string" && o.size.trim()) size = o.size.trim();
+        }
+      }
+
+      const allowMode = new Set(["keep","qio","qout","dio","dout"]);
+      const allowFreq = new Set(["keep","20m","26m","40m","80m"]);
+      const allowSize = new Set(["keep","1MB","2MB","4MB","8MB","16MB","32MB"]);
+      if (!allowMode.has(mode)) mode = "keep";
+      if (!allowFreq.has(freq)) freq = "keep";
+      if (!allowSize.has(size)) size = "keep";
+      return { flashMode: mode, flashFreq: freq, flashSize: size };
+    }
+
+    async function doFlash(loader, parts, { eraseAll = false, flashMode = "keep", flashFreq = "keep", flashSize = "keep" } = {}) {
+      const fileArray = parts.map(p => ({ address: p.address, data: loader.ui8ToBstr(p.data) }));
+      log(`フラッシュ書き込み開始... (eraseAll=${eraseAll}, mode=${flashMode}, freq=${flashFreq}, size=${flashSize})`);
+      let lastPct = -1;
+      await loader.writeFlash({
+        fileArray, eraseAll, compress: true,
+        flashMode, flashFreq, flashSize,
+        reportProgress: (_i, w, t) => {
+          const pct = Math.floor((w / t) * 100);
+          if (pct !== lastPct) { lastPct = pct; log(`進捗: ${pct}% (${w}/${t} bytes)`); }
+        }
+      });
+      log("フラッシュ書き込み完了");
+    }
+
+    async function connectAndFlash({ manifestURL, fwDir }) {
+      // 1) ポート
+      const port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] });
+      if (!port.readable) await port.open({ baudRate: 115200 });
+      await enterBootloader(port);
+
+      // 2) esptool-js
+      const { TransportClass, ESPLoaderClass, keys } = resolveESPExports();
+      log("esptool-js exports: " + JSON.stringify(keys));
+
+      let transport;
+      try { transport = (TransportClass.length >= 1) ? new TransportClass(port) : new TransportClass(); }
+      catch { transport = new TransportClass(); }
+      if (typeof transport.setPort === "function") { try { transport.setPort(port); } catch {} }
+      if (!transport.port) transport.port = port;
+      if (typeof transport.getInfo !== "function" && typeof port.getInfo === "function") {
+        transport.getInfo = () => port.getInfo();
+      }
+      if (typeof transport.connect === "function") { try { transport.connect = async () => {}; } catch {} }
+      const originalOpen = port.open.bind(port);
+      port.open = async (options) => {
+        if (port.readable) return;
+        const baudRate = options?.baudRate ?? options?.baudrate ?? 115200;
+        return originalOpen({ baudRate: (!baudRate || baudRate <= 0) ? 115200 : baudRate });
+      };
+
+      const loader = (() => {
+        try { return new ESPLoaderClass(transport, 921600, log); }
+        catch { return new ESPLoaderClass({ transport, baudrate: 921600, logger: log }); }
+      })();
+
+      log("ESP32と接続中...");
+      if (typeof loader.initialize === "function")      await loader.initialize();
+      else if (typeof loader.main === "function")       await loader.main();
+      else if (typeof loader.sync === "function")       await loader.sync();
+      else throw new Error("ESPLoader: initialize/main/sync のいずれも見つかりません");
+
+      // 3) manifest 取得
+      log(`Manifest: ${manifestURL}`);
+      const manifestRes = await fetch(manifestURL, { cache: "no-store" });
+      if (!manifestRes.ok) throw new Error("manifest.json の取得に失敗しました");
+      const manifest = await manifestRes.json();
+
+      // 4) チップ検出 → フラッシュ設定決定
+      const chipKey = await detectChipKey(loader);
+      const { flashMode, flashFreq, flashSize } = computeFlashSettings(manifest, chipKey);
+
+      // 5) erase/parts
+      const eraseAll = String(manifest.erase ?? "false").toLowerCase() === "true";
+      const rawParts = Array.isArray(manifest.parts) ? manifest.parts : [];
+      if (rawParts.length === 0) throw new Error("manifest.json: parts が空です");
+
+      const parts = [];
+      for (const p of rawParts) {
+        if (!p.file || p.offset === undefined) throw new Error("manifest.json: file/offset が不足しています");
+        const addr = parseOffset(p.offset);
+        const fileURL = `${fwDir}${p.file}?t=${Date.now()}`;
+        const bin = await fetchBin(fileURL);
+        log(`→ ${p.file} を 0x${addr.toString(16)} に書き込み予定 (${bin.length} bytes)`);
+        parts.push({ address: addr, data: bin });
+      }
+
+      // 6) 書き込み
+      await doFlash(loader, parts, { eraseAll, flashMode, flashFreq, flashSize });
+
+      // 7) ハードリセット → ストリーム再初期化 → ログ
+      log("ハードリセット中...");
+      try { await hardResetNormalBoot(port); }
+      catch { log("注意: 自動ハードリセット不可。基板のEN/RESETボタンを押してください。"); }
+
+      try {
+        if (transport?.reader) { try { await transport.reader.cancel(); } catch {}; try { transport.reader.releaseLock(); } catch {} }
+        if (typeof transport?.disconnect === "function") { try { await transport.disconnect(); } catch {} }
+        if (typeof transport?.close === "function") { try { await transport.close(); } catch {} }
+      } catch {}
+      try { if (port.readable?.locked) { try { await port.readable.cancel(); } catch {} } } catch {}
+      try { if (port.writable?.locked) { try { await port.writable.abort(); } catch {} } } catch {}
+      try { await port.close(); } catch {}
+      await sleep(80);
+
+      await port.open({ baudRate: 115200 });
+      log("=== シリアルログ開始 ===");
+      const reader = port.readable.getReader();
+      const decoder = new TextDecoder();
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value) log(decoder.decode(value));
+        }
+      } catch (e) {
+        log("ログ読み取り終了: " + e.message);
+      } finally {
+        try { reader.releaseLock(); } catch {}
+      }
+    }
+
+    // ===== UIハンドラ =====
+    async function onFlashClick() {
+      const version = versionSelect.value;
+      const bust = `?v=${encodeURIComponent(version)}&t=${Date.now()}`;
+      const fwDir = `${fwBase}${version}/`;
+      const manifestURL = `${fwDir}manifest.json${bust}`;
+
+      log(`選択: ${version}`);
+      log(`Manifest: ${manifestURL}`);
+
+      flashBtn.disabled = true;
+      versionSelect.disabled = true;
+      try {
+        if (!("serial" in navigator)) throw new Error("このブラウザは Web Serial API に未対応です（Chrome系/HTTPS推奨）");
+        await connectAndFlash({ manifestURL, fwDir });
+      } catch (err) {
+        log("エラー: " + err.message);
+      } finally {
+        flashBtn.disabled = false;
+        versionSelect.disabled = false;
+      }
+    }
+
+    flashBtn.addEventListener("click", onFlashClick);
+    clearLogBtn.addEventListener("click", clearLog);
+    loadVersions();
+  </script>
 </body>
 </html>

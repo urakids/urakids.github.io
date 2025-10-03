@@ -1,0 +1,13 @@
+{
+	"name": "ESP32-C3",
+	"version": "0725",
+	"builds": [
+		{
+			"chipFamily": "ESP32-C3",
+			"parts": [
+				{"path": "wifi_magic_all.bin", "offset": 0},
+				{"path": "resource.bin",   "offset": 2686976}
+			]
+		}
+	]
+}
