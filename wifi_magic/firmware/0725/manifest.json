@@ -1,5 +1,5 @@
 {
-  "erase": "true",
+  "erase": "false",
   "flash": {
     "mode": "qio",
     "freq": "80m",
