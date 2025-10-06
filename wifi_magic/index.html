@@ -135,7 +135,7 @@
     }
 
     async function fetchBin(url) {
-      log(`${url} を取得中...`);
+      //log(`${url} を取得中...`);
       const res = await fetch(url, { cache: 'no-store' });
       if (!res.ok) throw new Error(`${url} の取得に失敗しました`);
       return new Uint8Array(await res.arrayBuffer());
@@ -193,6 +193,7 @@
 
     async function doFlash(loader, parts, { eraseAll = false, flashMode = "keep", flashFreq = "keep", flashSize = "keep" } = {}) {
       const fileArray = parts.map(p => ({ address: p.address, data: loader.ui8ToBstr(p.data) }));
+      
       log(`フラッシュ書き込み開始... (eraseAll=${eraseAll}, mode=${flashMode}, freq=${flashFreq}, size=${flashSize})`);
       let lastPct = -1;
       await loader.writeFlash({
@@ -214,7 +215,7 @@
 
       // 2) esptool-js
       const { TransportClass, ESPLoaderClass, keys } = resolveESPExports();
-      log("esptool-js exports: " + JSON.stringify(keys));
+      //log("esptool-js exports: " + JSON.stringify(keys));
 
       let transport;
       try { transport = (TransportClass.length >= 1) ? new TransportClass(port) : new TransportClass(); }
@@ -273,6 +274,7 @@
 
       // 7) ハードリセット → ストリーム再初期化 → ログ
       log("ハードリセット中...");
+      const st_id = setTimeout(reset_serialLog, 3000);
       try { await hardResetNormalBoot(port); }
       catch { log("注意: 自動ハードリセット不可。基板のEN/RESETボタンを押してください。"); }
 
@@ -285,7 +287,7 @@
       try { if (port.writable?.locked) { try { await port.writable.abort(); } catch {} } } catch {}
       try { await port.close(); } catch {}
       await sleep(80);
-
+      clearTimeout(st_id);
       await port.open({ baudRate: 115200 });
       log("=== シリアルログ開始 ===");
       const reader = port.readable.getReader();
@@ -302,6 +304,15 @@
         try { reader.releaseLock(); } catch {}
       }
     }
+    
+    function reset_serialLog()
+    {
+    	flashBtn.disabled = false;
+      	versionSelect.disabled = false;
+      	//clearLog();
+      	log("=== シリアルログ開始 ===");
+    }
+    
 
     // ===== UIハンドラ =====
     async function onFlashClick() {
