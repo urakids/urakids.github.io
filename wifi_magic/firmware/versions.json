@@ -1,8 +1,8 @@
 {
   "versions": [
-    { "id": "latest_full", "name": "最新版(0930)" },
-    { "id": "0930", "name": "アップデート 0930", "value":"Captive Portal機能を追加"},
-    { "id": "0725", "name": "アップデート 0725", "value":"軽微なバグ修正"},
-    { "id": "0627", "name": "アップデート 0627", "value":"・AP設定時のブラウザでの文字化けを修正\n・updateページで現在のバージョンを表示するよう変更\n・config.json追加\n・wifi_tx_powerの設定変更を追加\n　それに合わせてconfigの読み込みを追加\n・config.json周り設定を追加"}
+    { "id": "latest_full", "name": "最新版(250930)" },
+    { "id": "250930", "name": "アップデート 250930", "value":"Captive Portal機能を追加"},
+    { "id": "250725", "name": "アップデート 250725", "value":"軽微なバグ修正"},
+    { "id": "250627", "name": "アップデート 250627", "value":"・AP設定時のブラウザでの文字化けを修正\n・updateページで現在のバージョンを表示するよう変更\n・config.json追加\n・wifi_tx_powerの設定変更を追加\n　それに合わせてconfigの読み込みを追加\n・config.json周り設定を追加"}
   ]
 }
